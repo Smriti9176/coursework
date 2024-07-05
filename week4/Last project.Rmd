@@ -1,0 +1,257 @@
+---
+title: "Immigration_plots"
+author: "Smriti"
+date: "2024-06-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+library(modelsummary)
+library(stm)
+library(here)
+
+immigration_data <- read_csv("Immigrant.csv", skip = 3, col_names = c('date','report_crime','immigrant_crime','immigrant_welfare'))
+
+
+immigration_data <- immigration_data%>%
+  mutate(month = parse_date(date, "%Y-%m")) %>% 
+  mutate(president = as.factor(ifelse(year(month) <= 2008, "Bush", ifelse(year(month) >= 2017, "Trump", "Obama"))))
+
+
+immigration_data %>% 
+  pivot_longer(names_to = "trend_type", values_to = "trends", cols = contains("_")) %>%
+  ggplot(aes(x=month, y = trends,color = president)) + geom_point(alpha = 0.3) + 
+  geom_smooth(method = lm, se = F) +
+  facet_wrap(~trend_type, dir = "v")
+```
+Creating Table 3:
+
+```{r}
+table3 <- immigration_data %>% 
+  mutate(is_trump = president == "Trump", is_bush = president == "Bush") 
+
+models <- list(
+report_crime_model = lm(report_crime ~ month + is_trump + is_bush, data = table3),
+immigrant_crime_model = lm(immigrant_crime ~ month + is_trump + is_bush, data = table3),
+immigrant_welfare_model = lm(immigrant_welfare ~ month + is_trump + is_bush, data = table3))
+
+msummary(models, output = 'markdown')
+```
+```{r}
+table3 %>% 
+  add_predictions(models[["report_crime_model"]]) %>% 
+  ggplot(aes(x=month, y = report_crime,color = president)) + geom_point(alpha = 0.3) + 
+  geom_smooth(method = lm, se = F) +
+  geom_line(aes(y=pred), line_type= "dashed")
+
+table3 %>%
+  add_predictions(models[["immigrant_crime_model"]]) %>%
+  ggplot(aes(x=month, y = immigrant_crime,color = president)) + geom_point() + 
+  geom_smooth(method = lm, se = F) +
+  geom_line(aes(y=pred), line_type= "dashed")
+
+table3 %>% 
+  add_predictions(models[["immigrant_welfare_model"]]) %>%
+  ggplot(aes(x=month, y = immigrant_welfare,color = president)) + geom_point() + 
+  geom_smooth(method = lm, se = F) +
+  geom_line(aes(y=pred), line_type= "dashed")
+```
+```{r}
+library(stm)
+load("TopicModel.RData")
+document_topics <- make.dt(immigrFit, meta = out$meta)
+topic_terms <- t(exp(immigrFit$beta$logbeta[[1]]))
+rownames(topic_terms) <- out$vocab
+colnames(topic_terms) <- sprintf("Topic%d", 1:ncol(topic_terms))
+
+document_topics <- document_topics %>% 
+  mutate(date = ymd(date))
+
+sections <- document_topics %>% 
+  filter(time == "pre-election") %>% 
+  arrange(date) %>% 
+  slice_tail(n=1) %>% 
+  pull(date)
+
+sections2 <- document_topics %>% 
+  filter(time == "post-election") %>% 
+  arrange(date) %>% 
+  slice_head(n=1) %>% 
+  pull(date)
+
+document_topics %>% 
+  mutate(month = floor_date(date, "month")) %>% 
+  group_by(month, channel, time) %>% 
+  summarize(num_segments = n()) %>% 
+  ggplot(aes(x=month,y = num_segments, color = channel)) + 
+  geom_point() +
+  geom_smooth(aes(group=interaction(channel,time)), se = F) +
+  geom_vline(aes(xintercept = sections), linetype = "dashed") +
+  geom_vline(aes(xintercept = sections2), linetype = "dashed") +
+  scale_color_manual(values = c("magenta", "red", "blue"))
+
+```
+
+We see a similar kind of result.
+
+```{r}
+document_topics %>% 
+  mutate(month = floor_date(date, "month")) %>% 
+  group_by(month, channel, time) %>% 
+  summarize(proportion1 = sum(Topic1), proportion3 = sum(Topic3), crime_coverage = proportion1+proportion3) %>% 
+  ggplot(aes(x=month,y = crime_coverage, color = channel)) + 
+  geom_point() +
+  geom_smooth(aes(group=interaction(channel,time)), se = F) +
+  geom_vline(aes(xintercept = sections), linetype = "dashed") +
+  geom_vline(aes(xintercept = sections2), linetype = "dashed") +
+  scale_color_manual(values = c("magenta", "red", "blue"))
+
+document_topics %>% 
+  mutate(month = floor_date(date, "month")) %>% 
+  group_by(month, channel, time) %>% 
+  summarize(welfare = sum(Topic13)) %>% 
+  ggplot(aes(x=month,y = welfare, color = channel)) + 
+  geom_point() +
+  geom_smooth(aes(group=interaction(channel,time)), se = F) +
+  geom_vline(aes(xintercept = sections), linetype = "dashed") +
+  geom_vline(aes(xintercept = sections2), linetype = "dashed") +
+  scale_color_manual(values = c("magenta", "red", "blue"))
+
+```
+```{r}
+table4 <- document_topics %>% 
+  mutate(month = floor_date(date, "month")) %>% 
+  group_by(month, time) %>% 
+  summarize(proportion1 = sum(Topic1), proportion3 = sum(Topic3), crime_coverage = proportion1 + proportion3, welfare = sum(Topic13), num_segments = n()) %>% 
+  mutate(trump_admin = time == "post-election") %>% 
+  inner_join(immigration_data, by = "month")
+
+lm(report_crime ~ num_segments+ crime_coverage + welfare + trump_admin + month, data = table4) %>% 
+
+msummary(output = 'markdown')
+```
+```{r}
+report_data <- read_csv('project/from_replication_files/google_trends_report.csv') %>% 
+  rename(report_trend = search)
+crime_data <- read_csv('project/from_replication_files/google_trends_crime.csv') %>% 
+  rename(crime_trend = search)
+welfare_data <- read_csv('project/from_replication_files/google_trends_welfare.csv') %>% 
+  rename(welfare_trend = search)
+
+trend_data_given <- report_data %>% 
+  inner_join(crime_data, by = c("year", "month")) %>% 
+  inner_join(welfare_data, by = c("year", "month")) %>% 
+  mutate(month = paste(year,month), month = parse_date(month, "%Y %m")) %>% 
+  mutate(president = as.factor(ifelse(year(month) <= 2008, "Bush", ifelse(year(month) >= 2017, "Trump", "Obama"))))
+
+trend_data_given %>% 
+  pivot_longer(names_to = "trend_type", values_to = "trends", cols = contains("_")) %>%
+  ggplot(aes(x=month, y = trends,color = president)) + geom_point(alpha = 0.3) + 
+  geom_smooth(method = lm, se = F) +
+  facet_wrap(~trend_type, dir = "v")
+
+```
+```{r}
+table3 <- immigration_data %>% 
+  mutate(is_trump = president == "Trump", is_bush = president == "Bush") 
+
+models <- list(
+report_crime_model = lm(report_crime ~ month + is_trump + is_bush, data = table3),
+immigrant_crime_model = lm(immigrant_crime ~ month + is_trump + is_bush, data = table3),
+immigrant_welfare_model = lm(immigrant_welfare ~ month + is_trump + is_bush, data = table3))
+
+msummary(models, output = 'markdown')
+table4 <- document_topics %>% 
+  mutate(month = floor_date(date, "month")) %>% 
+  group_by(month, time) %>% 
+  summarize(proportion1 = sum(Topic1), proportion3 = sum(Topic3), crime_coverage = proportion1 + proportion3, welfare = sum(Topic13), num_segments = n()) %>% 
+  mutate(trump_admin = time == "post-election") %>% 
+  inner_join(immigration_data, by = "month")
+
+lm(report_crime ~ num_segments+ crime_coverage + welfare + trump_admin + month, data = table4) %>% 
+
+msummary(output = 'markdown')
+```
+```{r}
+gt_report_daily_data <- read_csv("gt_report_daily.csv")
+
+table_daily_data <- document_topics %>% 
+  group_by(date, time) %>% 
+  summarize(proportion1 = sum(Topic1), proportion3 = sum(Topic3), crime_coverage = proportion1 + proportion3, welfare = sum(Topic13), num_segments = n()) %>% 
+  mutate(trump_admin = time == "post-election", month_of_year = month(date, label = T), 
+    day_of_week = wday(date, label=T)) %>% 
+  inner_join(gt_report_daily_data, by = "date")
+
+lm(search ~ num_segments+ crime_coverage + welfare + trump_admin + date + day_of_week + month_of_year, table_daily_data) %>% 
+msummary(output = 'markdown')
+
+lm(search_adj ~ num_segments+ crime_coverage + welfare + trump_admin + date + day_of_week + month_of_year, table_daily_data) %>%
+msummary(output = 'markdown')
+```
+```{r}
+report_data <- read_csv("report.csv", skip = 3, col_names = c('date','count1'))
+crime_data <- read_csv("crime.csv", skip = 3, col_names = c('date','count2'))
+welfare_data <- read_csv("welfare.csv", skip = 3, col_names = c('date','count3'))
+
+trend_data_new <- report_data %>% 
+  inner_join(crime_data, by = c("date")) %>% 
+  inner_join(welfare_data, by = c("date")) %>% 
+  mutate(month = parse_date(date, "%Y-%m")) %>% 
+  mutate(president = as.factor(ifelse(year(month) <= 2008, "Bush", ifelse(year(month) >= 2017, "Trump", "Obama"))))
+
+trend_data_new %>% 
+  pivot_longer(names_to = "trend_type", values_to = "trends", cols = contains("count")) %>%
+  ggplot(aes(x=month, y = trends,color = president)) + geom_point(alpha = 0.3) + 
+  geom_smooth(method = lm, se = F) +
+  facet_wrap(~trend_type, dir = "v")
+
+
+```
+We get a different result for welfare because we can see that in actual data, welfare search aftee Trump goes up, where here, conducting reserach individually, makes welfare search line gradually decrease.
+
+#Extension:
+
+The paper says: "We also expect that when the Trump administration receives media coverage for anti-immigrant rhetoric or policies, we will see an uptick in reporting searches. However, we do not expect a discontinuity in  reporting searches immediately after the 2016 election, nor do we expect media coverage of candidate Trump’s anti-immigrant rhetoric to generate more reporting searches. Neither candidate Trump nor president-elect Trump had the power to change immigration policy before his inauguration, so his anti-immigrant positions should not increase interest in reporting" (5-6). Smriti and I are skeptical of this claim, which the paper doesn't seem to actually prove, so we are going to investigate it and see if we find any discontinuities, and whether coverage of Candidate Trump also increases the amount of reporting.
+
+```{r}
+table_trump <- document_topics %>% 
+  mutate(month = floor_date(date, "month")) %>% 
+  group_by(month, channel, time, trump) %>% 
+  summarize(proportion1 = sum(Topic1), proportion3 = sum(Topic3), crime_coverage = proportion1 + proportion3, welfare = sum(Topic13), num_segments = n()) %>% 
+  mutate(trump_admin = time == "post-election") %>% 
+  inner_join(immigration_data, by = "month")
+
+lm(report_crime ~ num_segments+ crime_coverage + welfare + trump_admin + time * trump + month, table_trump) %>% 
+
+msummary(output = 'markdown')
+```
+```{r}
+discontinuity_data <- gt_report_daily_data %>% 
+   mutate(arbitrary_before = date > ymd("2016-09-01"), after_election = date >  ymd("2016-11-8"), after_inaugration = date> ymd("2017-01-20"), arbitrary_after = date >ymd("2017-04-01")) %>% 
+  filter(date >= ymd("2014-01-01")) 
+
+discontinuity_data %>% 
+  pivot_longer(c(arbitrary_before,after_election, after_inaugration, arbitrary_after), names_to = "split_location", values_to = "split_values") %>% 
+  filter(date >= ymd("2014-01-01")) %>% 
+  ggplot(aes(x=date, y = search_adj, color = split_values)) +
+  geom_point(alpha = 0.05) +
+  geom_smooth(method = lm, formula = y~x, se = F) +
+  facet_wrap(~split_location)
+```
+So we divided the splits to make the deductions more stronger, the data after the election showed a large discontinuity. 
+
+```{r}
+list(
+  lm(search_adj ~ date + arbitrary_before, discontinuity_data),
+  lm(search_adj ~ date + after_election, discontinuity_data),
+  lm(search_adj ~ date + after_inaugration, discontinuity_data),
+  lm(search_adj ~ date + arbitrary_after, discontinuity_data)
+) %>% 
+
+msummary(output = 'markdown')
+```
+
